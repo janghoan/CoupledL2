@@ -29,10 +29,6 @@ import coupledL2.tl2chi.CHICohStateFwdedTrans._
 
 case object CHIIssue extends Field[String](Issue.B)
 
-case object NonSecureKey extends Field[Boolean](false)
-
-case object CHIAddrWidthKey extends Field[Int](48)
-
 object CHICohStates {
   val width = 3
 
@@ -235,7 +231,7 @@ trait HasCHIMsgParameters {
     "RSP_OPCODE_WIDTH" -> 4,
     "SNP_OPCODE_WIDTH" -> 5,
     "DAT_OPCODE_WIDTH" -> 3,
-    "ADDR_WIDTH" -> p(CHIAddrWidthKey),
+    "ADDR_WIDTH" -> 48,
     "SIZE_WIDTH" -> 3,
     "PCRDTYPE_WIDTH" -> 4,
     "MEMATTR_WIDTH" -> 4,
@@ -259,6 +255,7 @@ trait HasCHIMsgParameters {
     // new width def for existing fields
     "NODEID_WIDTH" -> 9,
     "DAT_OPCODE_WIDTH" -> 4,
+    // "ADDR_WIDTH" -> 44
   )
 
   val Eb_CONFIG = C_CONFIG ++ Map(
@@ -275,7 +272,8 @@ trait HasCHIMsgParameters {
     "CBUSY_WIDTH" -> 3,
     "MPAM_WIDTH" -> 11,
     "SLCREPHINT_WIDTH" -> 7,
-    "TAGOP_WIDTH" -> 2
+    "TAGOP_WIDTH" -> 2,
+    "ADDR_WIDTH" -> 48
   )
 
   val params = Map(
@@ -368,10 +366,6 @@ trait HasCHIMsgParameters {
   def DAT_RSVDC_WIDTH = CONFIG("DAT_RSVDC_WIDTH") // Permitted RSVDC bus widths Y = 0, 4, 12, 16, 24, 32
   def CBUSY_WIDTH = CONFIG("CBUSY_WIDTH") // E.b field. The width is tied to 3. Custom completer state indicator.
   def MPAM_WIDTH = CONFIG("MPAM_WIDTH") // E.b field. Optional, width 0 or 11. Memory Performance and Monitoring.
-
-  def enableNS = p(NonSecureKey)
-
-  require(ADDR_WIDTH >= 44 && ADDR_WIDTH <= 52)
 }
 
 class MemAttr extends Bundle {
@@ -399,26 +393,6 @@ object MemAttr {
     memAttr
   }
   def apply(): MemAttr = apply(false.B, false.B, false.B, false.B)
-}
-
-class MPAM extends Bundle {
-  // The resources are partitioned among users by Partition ID (PartID) and Performance Monitoring Group (PerfMonGroup)
-  val perfMonGroup = UInt(1.W)
-  val partID = UInt(9.W)
-  //  A Non-secure bit in the MPAM field, this is in addition to and different from the NS bit of the request.
-  //  The polarity of the MPAMNS bit encoding is the same as that of the NS bit.
-  val mpamNS = Bool()
-}
-
-object MPAM {
-  def apply(perfMonGroup: UInt, partID: UInt, mpamNS: Bool): MPAM = {
-    val mpam = Wire(new MPAM)
-    mpam.perfMonGroup := perfMonGroup
-    mpam.partID := partID
-    mpam.mpamNS := mpamNS
-    mpam
-  }
-  def apply(mpamNS: Bool): MPAM = apply(0.U, 0.U, mpamNS) // See Default values for MPAM subfields 
 }
 
 abstract class CHIBundle(implicit val p: Parameters) extends Bundle with HasCHIMsgParameters
@@ -468,12 +442,55 @@ class CHIREQ(implicit p: Parameters) extends CHIBundle {
   val expCompAck = Bool()
   val tagOp = Eb_FIELD(UInt(TAGOP_WIDTH.W))
   val traceTag = Bool()
-  val mpam = Eb_FIELD(new MPAM())
+  val mpam = Eb_FIELD(UInt(MPAM_WIDTH.W))
   val rsvdc = UInt(REQ_RSVDC_WIDTH.W)
 
   /* MSB */
 
-  require(mpam.map(_.getWidth).orElse(Some(0)).get == MPAM_WIDTH, "configured MPAM width mismatch")
+  // Helper function to get bit range for specific field
+  def getFieldBitRange(fieldName: String): Option[(Int, Int)] = {
+    var currentBit = 0
+    val fields = Seq(
+      ("qos", QOS_WIDTH),
+      ("tgtID", TGTID_WIDTH),
+      ("srcID", SRCID_WIDTH),
+      ("txnID", TXNID_WIDTH),
+      ("returnNID", RETURNNID_WIDTH),
+      ("stashNIDValid", 1),
+      ("returnTxnID", RETURNTXNID_WIDTH),
+      ("opcode", REQ_OPCODE_WIDTH),
+      ("size", SIZE_WIDTH),
+      ("addr", ADDR_WIDTH),
+      ("ns", 1),
+      ("likelyshared", 1),
+      ("allowRetry", 1),
+      ("order", ORDER_WIDTH),
+      ("pCrdType", PCRDTYPE_WIDTH),
+      ("memAttr", 4), // MemAttr is 4 bits
+      ("snpAttr", 1),
+      ("lpIDWithPadding", LPID_WITH_PADDING_WIDTH),
+      ("snoopMe", 1),
+      ("expCompAck", 1),
+      ("traceTag", 1),
+      ("rsvdc", REQ_RSVDC_WIDTH)
+    )
+
+    for ((name, width) <- fields) {
+      if (name == fieldName) {
+        return Some((currentBit + width - 1, currentBit))
+      }
+      currentBit += width
+    }
+    None
+  }
+
+  // Helper function to extract field value from flit
+  def extractField(flit: UInt, fieldName: String): Option[UInt] = {
+    getFieldBitRange(fieldName) match {
+      case Some((high, low)) => Some(flit(high, low))
+      case None => None
+    }
+  }
 }
 
 class CHISNP(implicit p: Parameters) extends CHIBundle {
@@ -499,11 +516,9 @@ class CHISNP(implicit p: Parameters) extends CHIBundle {
 
   val retToSrc = Bool()
   val traceTag = Bool()
-  val mpam = Eb_FIELD(new MPAM())
+  val mpam = Eb_FIELD(UInt(MPAM_WIDTH.W))
 
   /* MSB */
-
-  require(mpam.map(_.getWidth).orElse(Some(0)).get == MPAM_WIDTH, "configured MPAM width mismatch")
 }
 
 class CHIDAT(implicit p: Parameters) extends CHIBundle {
